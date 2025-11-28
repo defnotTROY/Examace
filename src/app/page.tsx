@@ -1,6 +1,10 @@
 "use client";
 
-import { useState, KeyboardEvent } from "react";
+import { useState, KeyboardEvent, useRef, DragEvent } from "react";
+import mammoth from "mammoth";
+
+// Dynamically import PDF.js only on client side
+let pdfjsLib: any = null;
 
 const defaultConfig = {
   background_color: "#050816",
@@ -30,6 +34,8 @@ export default function Page() {
   const [questions, setQuestions] = useState<string[]>([]);
   const [detailedSummary, setDetailedSummary] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const baseFontStack =
     '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
@@ -92,6 +98,139 @@ export default function Page() {
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
       e.preventDefault();
       handleGenerate();
+    }
+  };
+
+  // --------- FILE UPLOAD HANDLERS ----------
+
+  const readFileContent = async (file: File): Promise<string> => {
+    const fileExtension = file.name.split('.').pop()?.toLowerCase();
+
+    try {
+      // Handle PDF files
+      if (fileExtension === 'pdf') {
+        if (!pdfjsLib) {
+          // Dynamically import if not already loaded
+          pdfjsLib = await import("pdfjs-dist");
+          // Use worker from public folder (copied during build) or fallback to unpkg CDN
+          pdfjsLib.GlobalWorkerOptions.workerSrc = `/pdf.worker.min.js`;
+        }
+        
+        const arrayBuffer = await file.arrayBuffer();
+        const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+        let fullText = '';
+
+        for (let i = 1; i <= pdf.numPages; i++) {
+          const page = await pdf.getPage(i);
+          const textContent = await page.getTextContent();
+          const pageText = textContent.items
+            .map((item: any) => item.str)
+            .join(' ');
+          fullText += pageText + '\n\n';
+        }
+
+        return fullText.trim();
+      }
+
+      // Handle Word documents (.docx)
+      if (fileExtension === 'docx' || fileExtension === 'doc') {
+        const arrayBuffer = await file.arrayBuffer();
+        const result = await mammoth.extractRawText({ arrayBuffer });
+        return result.value;
+      }
+
+      // Handle text files (.txt, .md, .text)
+      if (fileExtension === 'txt' || fileExtension === 'md' || fileExtension === 'text') {
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = (e) => {
+            const content = e.target?.result as string;
+            resolve(content);
+          };
+          reader.onerror = () => reject(new Error("Failed to read file"));
+          reader.readAsText(file);
+        });
+      }
+
+      // Default: try reading as text
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const content = e.target?.result as string;
+          resolve(content);
+        };
+        reader.onerror = () => reject(new Error("Failed to read file"));
+        reader.readAsText(file);
+      });
+    } catch (error) {
+      throw new Error(`Failed to read ${fileExtension} file: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  };
+
+  const handleFileSelect = async (file: File) => {
+    if (!file) return;
+
+    // Check file size (max 10MB for PDFs and docs, 5MB for others)
+    const maxSize = file.name.toLowerCase().endsWith('.pdf') || file.name.toLowerCase().endsWith('.docx') || file.name.toLowerCase().endsWith('.doc')
+      ? 10 * 1024 * 1024
+      : 5 * 1024 * 1024;
+    
+    if (file.size > maxSize) {
+      setError(`File is too large. Please use files smaller than ${maxSize / (1024 * 1024)}MB.`);
+      return;
+    }
+
+    try {
+      setError(null);
+      setIsGenerating(true); // Show loading state while processing file
+      const content = await readFileContent(file);
+      
+      // Limit content to 10,000 characters to match API limit
+      if (content.length > 10000) {
+        setInputText(content.substring(0, 10000));
+        setError("File content was truncated to 10,000 characters to meet API limits.");
+      } else {
+        setInputText(content);
+      }
+    } catch (err) {
+      console.error("Error reading file:", err);
+      setError(`Failed to read file: ${err instanceof Error ? err.message : 'Unknown error'}. Please try a different file or paste the content directly.`);
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      handleFileSelect(file);
+    }
+    // Reset input so same file can be selected again
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  const handleDragOver = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+
+    const file = e.dataTransfer.files?.[0];
+    if (file) {
+      handleFileSelect(file);
     }
   };
 
@@ -429,7 +568,35 @@ export default function Page() {
                 </span>
               </div>
 
-              <div className="relative flex-1">
+              {/* File Upload Area */}
+              <div className="mb-3">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".txt,.md,.text,.pdf,.docx,.doc"
+                  onChange={handleFileInputChange}
+                  className="hidden"
+                  id="file-upload"
+                />
+                <label
+                  htmlFor="file-upload"
+                  className="flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-slate-700/80 bg-slate-900/60 px-4 py-2.5 text-xs text-slate-300 transition hover:border-indigo-400/80 hover:bg-slate-900/80"
+                >
+                  <span className="text-base">📎</span>
+                  <span>Upload file (.txt, .md, .pdf, .docx) or drag & drop</span>
+                </label>
+              </div>
+
+              <div
+                className={`relative flex-1 rounded-xl border-2 border-dashed transition ${
+                  isDragging
+                    ? "border-indigo-400 bg-indigo-500/10"
+                    : "border-transparent"
+                }`}
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+              >
                 <textarea
                   value={inputText}
                   onChange={(e) => setInputText(e.target.value)}
@@ -449,6 +616,13 @@ export default function Page() {
                 <div className="pointer-events-none absolute bottom-2 right-3 text-[10px] text-slate-500">
                   {inputText.length} chars
                 </div>
+                {isDragging && (
+                  <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-indigo-500/20 backdrop-blur-sm">
+                    <div className="rounded-lg bg-slate-900/90 px-4 py-2 text-sm font-medium text-indigo-200 shadow-lg">
+                      📎 Drop file here to upload
+                    </div>
+                  </div>
+                )}
               </div>
 
               {error && (
