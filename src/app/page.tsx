@@ -109,14 +109,16 @@ export default function Page() {
     try {
       // Handle PDF files
       if (fileExtension === 'pdf') {
+        // Only load PDF.js in browser environment
+        if (typeof window === "undefined") {
+          throw new Error("PDF processing is only available in the browser");
+        }
+        
         if (!pdfjsLib) {
-          // Dynamically import if not already loaded
+          // Dynamically import if not already loaded - only in browser
           pdfjsLib = await import("pdfjs-dist");
-          // Use worker from public folder - works in both dev and production
-          pdfjsLib.GlobalWorkerOptions.workerSrc = 
-            typeof window !== "undefined" 
-              ? `${window.location.origin}/pdf.worker.min.js`
-              : `/pdf.worker.min.js`;
+          // Use worker from public folder
+          pdfjsLib.GlobalWorkerOptions.workerSrc = `${window.location.origin}/pdf.worker.min.js`;
         }
         
         const arrayBuffer = await file.arrayBuffer();
