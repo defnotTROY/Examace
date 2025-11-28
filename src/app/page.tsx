@@ -112,8 +112,11 @@ export default function Page() {
         if (!pdfjsLib) {
           // Dynamically import if not already loaded
           pdfjsLib = await import("pdfjs-dist");
-          // Use worker from public folder (copied during build) or fallback to unpkg CDN
-          pdfjsLib.GlobalWorkerOptions.workerSrc = `/pdf.worker.min.js`;
+          // Use worker from public folder - works in both dev and production
+          pdfjsLib.GlobalWorkerOptions.workerSrc = 
+            typeof window !== "undefined" 
+              ? `${window.location.origin}/pdf.worker.min.js`
+              : `/pdf.worker.min.js`;
         }
         
         const arrayBuffer = await file.arrayBuffer();
